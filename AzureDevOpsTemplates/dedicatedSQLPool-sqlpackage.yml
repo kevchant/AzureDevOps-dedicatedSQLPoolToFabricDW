@@ -1,0 +1,137 @@
+# This is a pipeline to extract the contents of a database in a serverless SQL Pool using SQL Package into a dacpac file
+# From there it deploys the dacpac file to another database in a serverless SQL Pool
+
+# Please note that you need the below variables created for this to work
+# I recommend doing this by creating at least one variable group
+#   agentpool - The name of the agent pool you want to use (ideally a self-hosted one with latest sqlpackage installed)
+#     Otherwise you must put additional logic in this pipeline to deploy latest version of sqlpackage onto the agent
+#   TargetFile - The name of the dacpac that you want to be created
+#   TargetFolder - The name of the folder that the agent will use
+#   SourceSQLPoolEndPoint - The name of your serverless SQL Pool endpoint (which you can get in the Azure Synapse overview)
+#   SourceDB - The name of database in the serverless SQL Pool you want to extract the schema from
+#   SQLPooluser - A SQL login that can access the serverless SQL Pool
+#   SQLPoolpw - The p/w for the above SQL login
+#   SQLPoolartifactname - A name for the created artifact
+#   AzureSubscription - he Azure subscription that contains the Azure Active Directory tenant used by your Microsoft Fabric environment
+#   aadSqlUsername - An Azure Active Directory account
+#   aadSqlpw - P/w for the Azure Active Directory account
+#   DestSQLConnString - The connection string used by the Microsoft Fabric Data Warehouse. As shown 'here '
+#   DestinationDW - The name of your Microsoft Fabric Data Warehouse
+
+
+# This pipeline uses the variable group: SQLPackageTest
+# Feel free to create youw own and use the below
+variables:
+- group: SQLPackageTest
+
+trigger:
+- main
+
+# This is the name of the pool you have setup your local Azure DevOps Agent in
+pool: 
+  name: $(agentpool)
+
+stages:
+
+- stage: Pooldacpac
+  displayName: 'Build dacpac'
+
+  jobs:
+    - job: 'Builddacpac'
+      displayName: 'Build SQL Pool dacpac'
+      
+      steps:
+      # First extract the files from the database
+      - task: PowerShell@2
+        inputs:
+          targetType: 'inline'
+          script: |
+            # PowerShell to extract contents of a database in a serverless SQLPool into files
+            
+            # SqlPackage /Action:Extract /TargetFile:$(Build.ArtifactStagingDirectory)\$(TargetFile) /p:VerifyExtraction=true /SourceServerName:$(SourceSQLPoolEndPoint) /SourceDatabaseName:$(SourceDB) /SourceUser:$(SQLPooluser) /SourcePassword:$(SQLPoolpw)
+            SqlPackage /Action:Extract /TargetFile:$(Build.ArtifactStagingDirectory)\$(TargetFile) /p:IgnoreExtendedProperties=true /p:ExtractTarget=SchemaObjectType /p:VerifyExtraction=true /SourceServerName:$(SourceSQLPoolEndPoint) /SourceDatabaseName:$(SourceDB) /SourceUser:$(SQLPooluser) /SourcePassword:$(SQLPoolpw)            
+
+      # Next, remove references to indexes and distribution types from all SQL files
+      - task: PowerShell@2
+        inputs:
+          targetType: 'inline'
+          script: |
+            cd..
+            cd a
+            # To avoid any confusion rename the dacpac folder to the Target Folder name
+            Rename-Item $(TargetFile) $(TargetFolder)
+
+            cd $(TargetFolder)
+
+            $SQLFiles = Get-ChildItem -Recurse -File *.sql | Select FullName
+            $SQLFiles
+            foreach($file in $SQLFiles.Fullname){
+              # Remove any line that starts with 'WITH'
+                (Get-Content "$file") | Where-Object {$_ -notmatch 'WITH'} | Set-Content "$file"
+              }
+
+      # Next navigate to the extracted files and create a new database project which will use them thanks to globbing
+      - task: PowerShell@2
+        inputs:
+          targetType: 'inline'
+          script: |
+            cd..
+            cd a
+            cd $(Build.ArtifactStagingDirectory)\$(TargetFolder)
+            dotnet new sqlproj -tp Sql150
+
+      - task: DotNetCoreCLI@2
+        displayName: 'Build the dacpac using dotnet'
+        inputs:
+          command: 'build'
+          projects: '$(Build.ArtifactStagingDirectory)\$(TargetFolder)\Fabric-HomemadeProject.sqlproj'
+          arguments: '--configuration $(BuildConfiguration)'
+
+
+      - task: PublishBuildArtifacts@1
+        displayName: 'Publishes dacpac as an artifact'
+        # Publishes the dacpac as part of an artifact within Azure DevOps
+        inputs:
+          PathtoPublish: '$(System.ArtifactsDirectory)\$(TargetFolder)\bin\$(BuildConfiguration)'
+          ArtifactName: $(SQLPoolartifactname)
+          publishLocation: 'Container'
+
+# Now lets deploy the dacpac to a dedicated SQL Pool
+# Note that doing this using a deployment job so can state environment
+- stage: FabricDW
+  displayName: 'Deploy Datawarehouse'
+  jobs:
+    - deployment: 'FabricDW'
+      displayName: 'Fabric Datawarehouse'
+      environment: Production
+
+      pool: 
+        name: $(agentpool)
+
+      strategy:
+        runOnce:
+          deploy:
+            steps:
+                  - task: DownloadBuildArtifacts@0
+                    displayName: 'Dowload Artifacts'
+                    inputs:
+                      buildType: 'current'
+                      downloadType: 'specific'
+                      artifactName:  '$(SQLPoolartifactname)'
+                      downloadPath: '$(System.ArtifactsDirectory)'
+
+                  - task: SqlAzureDacpacDeployment@1
+                    displayName: 'Install DACPAC on Fabric DataWarehouse'
+                    inputs:
+                      azureSubscription: $(AzureSubscription)
+                      AuthenticationType: 'aadAuthenticationPassword'
+                      aadSqlUsername: '$(aadSqlUsername)'
+                      aadSqlPassword: '$(aadSqlpw)'
+                      ServerName: $(DestSQLConnString)
+                      DatabaseName: '$(DestinationDW)'
+                      deployType: 'DacpacTask'
+                      DeploymentAction: 'Publish'
+                      DacpacFile: '$(System.ArtifactsDirectory)\$(SQLPoolartifactname)\$(Targetfile)'
+                      AdditionalArguments: '/p:VerifyCollationCompatibility=False /p:AllowIncompatiblePlatform=True'
+
+
