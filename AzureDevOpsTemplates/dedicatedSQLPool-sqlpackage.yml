@@ -56,18 +56,18 @@ stages:
         inputs:
           targetType: 'inline'
           script: |
-            cd..
-            cd a
+            Set-Location $(Build.ArtifactStagingDirectory)
+            
             # To avoid any confusion rename the dacpac folder to the Target Folder name
             Rename-Item $(TargetFile) $(TargetFolder)
 
             cd $(TargetFolder)
 
-            $SQLFiles = Get-ChildItem -Recurse -File *.sql | Select FullName
+            $SQLFiles = Get-ChildItem -Recurse -File *.sql | Select-Object -ExpandProperty FullName
             $SQLFiles
-            foreach($file in $SQLFiles.Fullname){
+            foreach($file in $SQLFiles){
               # Remove any line that starts with 'WITH'
-                (Get-Content "$file") | Where-Object {$_ -notmatch 'WITH'} | Set-Content "$file"
+                (Get-Content "$file") | Where-Object {$_ -notmatch '^\s*WITH'} | Set-Content "$file"
               }
 
       # Next navigate to the extracted files and create a new database project which will use them thanks to globbing
@@ -75,8 +75,6 @@ stages:
         inputs:
           targetType: 'inline'
           script: |
-            cd..
-            cd a
             cd $(Build.ArtifactStagingDirectory)\$(TargetFolder)
             dotnet new sqlproj -tp Sql150
 
