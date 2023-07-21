@@ -1,7 +1,7 @@
 # AzureDevOps-dedicatedSQLPoolToFabricDW
 Example of a state-Based deployment that can create a dacpac file based on an existing database within a dedicated SQL Pool and then deploy it to a Microsoft Fabric Data Warehouse.
 
-It is based on a blog post I wrote called Migrate dedicated SQL Pool objects to a Microsoft Fabric Data Warehouse.
+It is based on a blog post I wrote called '[Migrate dedicated SQL Pool objects to a Microsoft Fabric Data Warehouse](https://www.kevinrchant.com/2023/07/19/migrate-dedicated-sql-pool-objects-to-a-microsoft-fabric-data-warehouse/)'.
 
 You can find the YAML file which you can use as a template for the Azure Pipeline in the AzureDevOpsTemplates folder. 
 
